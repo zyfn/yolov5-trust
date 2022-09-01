@@ -3,6 +3,8 @@
 Loss functions
 """
 
+from cmath import log
+from math import gamma
 import torch
 import torch.nn as nn
 
@@ -87,6 +89,25 @@ class QFocalLoss(nn.Module):
         else:  # 'none'
             return loss
 
+##########################################################################################################################
+class ACELoss(nn.Module):
+    def __init__(self,lamd):
+        super().__init__()
+        self.lamd = lamd
+
+    def forward(self, pred, true):
+        e = torch.relu(pred)  # prob from relu
+        alpha = e + 1
+        alpha_kl = true+(-true+1)*alpha
+        s = alpha.sum(dim=1).view(-1,1)
+        K = alpha[0].shape
+        loss_ace = (true*(self.digamma(s)-self.digamma(alpha))).sum()
+        loss_kl = log(gamma(alpha_kl.sum(dim=1)).prod()/(gamma(K)*gamma(alpha_kl.prod(dim=1)).prod()))+(alpha_kl-1)*(self.digamma(alpha_kl)-self.digamma(alpha_kl.sum(dim=0))).sum()
+        loss=loss_ace+self.lamd*loss_kl
+        return loss.mean()
+
+    def digamma(x):
+        return torch.special.digamma(x)
 
 class ComputeLoss:
     sort_obj_iou = False
@@ -98,6 +119,7 @@ class ComputeLoss:
 
         # Define criteria
         BCEcls = nn.BCEWithLogitsLoss(pos_weight=torch.tensor([h['cls_pw']], device=device))
+        ACEcls = ACELoss(lamd=1)
         BCEobj = nn.BCEWithLogitsLoss(pos_weight=torch.tensor([h['obj_pw']], device=device))
 
         # Class label smoothing https://arxiv.org/pdf/1902.04103.pdf eqn 3
@@ -132,7 +154,9 @@ class ComputeLoss:
             n = b.shape[0]  # number of targets
             if n:
                 # pxy, pwh, _, pcls = pi[b, a, gj, gi].tensor_split((2, 4, 5), dim=1)  # faster, requires torch 1.8.0
-                pxy, pwh, _, pcls = pi[b, a, gj, gi].split((2, 2, 1, self.nc), 1)  # target-subset of predictions
+                ####################################################################################################################
+                pxy, pwh, _, pcls,u = pi[b, a, gj, gi].split((2, 2, 1, self.nc , 1), 1)  # target-subset of predictions
+                # pxy, pwh, _, pcls = pi[b, a, gj, gi].split((2, 2, 1, self.nc), 1)  # target-subset of predictions
 
                 # Regression
                 pxy = pxy.sigmoid() * 2 - 0.5
