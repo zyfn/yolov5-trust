@@ -818,8 +818,8 @@ def non_max_suppression(prediction,
 
     bs = prediction.shape[0]  # batch size
     ##########################################################################################################
-    nc = prediction.shape[2] - 6
-    # nc = prediction.shape[2] - 5  # number of classes
+    # nc = prediction.shape[2] - 6
+    nc = prediction.shape[2] - 5  # number of classes
     xc = prediction[..., 4] > conf_thres  # candidates
 
     # Checks
@@ -857,8 +857,8 @@ def non_max_suppression(prediction,
 
         # Compute conf
         #################################################################################
-        x[:, 5:5+nc] *= x[:, 4:5]  # conf = obj_conf * cls_conf
-        # x[:, 5:] *= x[:, 4:5]  # conf = obj_conf * cls_conf
+        # x[:, 5:5+nc] *= x[:, 4:5]  # conf = obj_conf * cls_conf
+        x[:, 5:] *= x[:, 4:5]  # conf = obj_conf * cls_conf
 
         # Box (center x, center y, width, height) to (x1, y1, x2, y2)
         box = xywh2xyxy(x[:, :4])
@@ -868,11 +868,11 @@ def non_max_suppression(prediction,
             x = torch.cat((box[i], x[i, j + 5, None], j[:, None].float()), 1)
         else:  # best class only
             #################################################################################
-            conf, j = x[:, 5:5+nc].max(1, keepdim=True)
-            # conf, j = x[:, 5:].max(1, keepdim=True)
+            # conf, j = x[:, 5:5+nc].max(1, keepdim=True)
+            conf, j = x[:, 5:].max(1, keepdim=True)
             #################################################################################
-            x = torch.cat((box, conf, j.float(),x[...,nc+5:nc+6]), 1)[conf.view(-1) > conf_thres]
-            # x = torch.cat((box, conf, j.float()), 1)[conf.view(-1) > conf_thres]
+            # x = torch.cat((box, conf, j.float(),x[...,nc+5:nc+6]), 1)[conf.view(-1) > conf_thres]
+            x = torch.cat((box, conf, j.float()), 1)[conf.view(-1) > conf_thres]
 
         # Filter by class
         if classes is not None:

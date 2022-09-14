@@ -3,8 +3,10 @@
 Loss functions
 """
 
-from cmath import log
-from math import gamma
+
+from math import log10,gamma,log
+from tkinter.tix import Tree
+# from scipy.special import gamma
 import torch
 import torch.nn as nn
 
@@ -43,6 +45,7 @@ class FocalLoss(nn.Module):
         self.alpha = alpha
         self.reduction = loss_fcn.reduction
         self.loss_fcn.reduction = 'none'  # required to apply FL to each element
+        torch.special.gamm
 
     def forward(self, pred, true):
         loss = self.loss_fcn(pred, true)
@@ -90,36 +93,98 @@ class QFocalLoss(nn.Module):
             return loss
 
 ##########################################################################################################################
-class ACELoss(nn.Module):
-    def __init__(self,lamd):
+class edl_digamma_loss(nn.Module):
+    def __init__(self,lamd,device='cpu'):
         super().__init__()
         self.lamd = lamd
+        self.device=device
+    def forward(self, pred, true,epoch=None,epochs=None):
+        if epochs:
+            self.lamd=min(1.0,epoch/10)
+        else:
+            self.lamd=1
 
-    def forward(self, pred, true):
         e = torch.relu(pred)  # prob from relu
         alpha = e + 1
-        alpha_kl = true+(-true+1)*alpha
-        s = alpha.sum(dim=1).view(-1,1)
-        K = alpha[0].shape
-        loss_ace = (true*(self.digamma(s)-self.digamma(alpha))).sum()
-        loss_kl = log(gamma(alpha_kl.sum(dim=1)).prod()/(gamma(K)*gamma(alpha_kl.prod(dim=1)).prod()))+(alpha_kl-1)*(self.digamma(alpha_kl)-self.digamma(alpha_kl.sum(dim=0))).sum()
+        alpha_kl = (true+(1-true)*alpha)
+
+        s = alpha.sum(dim=1,keepdim=True)
+        K = torch.tensor(alpha[0].shape[0])
+
+        # loss_ace = (true*(s.digamma()-alpha.digamma())).mean()
+        loss_ace = (true*(s.digamma()-alpha.digamma())).sum(dim=1,keepdim=True)
+        loss_kl = ((torch.lgamma(alpha_kl.sum(dim=1,keepdim=True)) - (torch.lgamma(alpha_kl).sum(dim=1,keepdim=True)+torch.lgamma(K)))  +  \
+                 ((alpha_kl-1).mul(alpha_kl.digamma()-alpha_kl.sum(dim=1,keepdim=True).digamma())).sum(dim=1,keepdim=True))
+        # print(f'loss_ace:{loss_ace}')
+        # print(f'loss_kl:{loss_kl}')
+        # print((torch.lgamma(alpha_kl.sum(dim=1,keepdim=True)) - (torch.lgamma(alpha_kl).sum(dim=1,keepdim=True)+torch.lgamma(K))).sum(dim=-1))
         loss=loss_ace+self.lamd*loss_kl
+        # print(f'loss:{loss}')
         return loss.mean()
 
-    def digamma(x):
-        return torch.special.digamma(x)
+############################################################################################################################
+class edl_log_loss(nn.Module):
+    def __init__(self, num_classes, annealing_step, device=None):
+        super().__init__()
+        self.num_classes=num_classes
+        self.annealing_step=annealing_step
+        self.device=device
+    
+    def forward(self,output, target,epoch_num):
+        evidence = torch.relu(output)
+        alpha = evidence + 1
+        loss = torch.mean(
+            self.edl_loss(
+                torch.log, target, alpha, epoch_num, self.num_classes, self.annealing_step, self.device
+            )
+        )
+        return loss
+
+    def kl_divergence(self,alpha, num_classes, device=None):
+        ones = torch.ones([1, num_classes], dtype=torch.float32, device=device)
+        sum_alpha = torch.sum(alpha, dim=1, keepdim=True)
+        first_term = (
+            torch.lgamma(sum_alpha)
+            - torch.lgamma(alpha).sum(dim=1, keepdim=True)
+            + torch.lgamma(ones).sum(dim=1, keepdim=True)
+            - torch.lgamma(ones.sum(dim=1, keepdim=True))
+        )
+        second_term = (
+            (alpha - ones)
+            .mul(torch.digamma(alpha) - torch.digamma(sum_alpha))
+            .sum(dim=1, keepdim=True)
+        )
+        kl = first_term + second_term
+        return kl
+    def edl_loss(self,func, y, alpha, epoch_num, num_classes, annealing_step, device=None):
+        alpha = alpha.to(device)
+        S = torch.sum(alpha, dim=1, keepdim=True)
+
+        A = torch.sum(y * (func(S) - func(alpha)), dim=1, keepdim=True)
+
+        annealing_coef = torch.min(
+            torch.tensor(1.0, dtype=torch.float32),
+            torch.tensor(epoch_num / annealing_step, dtype=torch.float32),
+        )
+
+        kl_alpha = (alpha - 1) * (1 - y) + 1
+        kl_div = annealing_coef * self.kl_divergence(kl_alpha, num_classes, device=device)
+        # return A + kl_div
+        return A
+
+
 
 class ComputeLoss:
     sort_obj_iou = False
 
     # Compute losses
-    def __init__(self, model, autobalance=False):
+    def __init__(self, model,autobalance=False):
         device = next(model.parameters()).device  # get model device
         h = model.hyp  # hyperparameters
 
         # Define criteria
         BCEcls = nn.BCEWithLogitsLoss(pos_weight=torch.tensor([h['cls_pw']], device=device))
-        ACEcls = ACELoss(lamd=1)
+        # ACEcls = edl_digamma_loss(lamd=0,device=device)
         BCEobj = nn.BCEWithLogitsLoss(pos_weight=torch.tensor([h['obj_pw']], device=device))
 
         # Class label smoothing https://arxiv.org/pdf/1902.04103.pdf eqn 3
@@ -134,13 +199,18 @@ class ComputeLoss:
         self.balance = {3: [4.0, 1.0, 0.4]}.get(m.nl, [4.0, 1.0, 0.25, 0.06, 0.02])  # P3-P7
         self.ssi = list(m.stride).index(16) if autobalance else 0  # stride 16 index
         self.BCEcls, self.BCEobj, self.gr, self.hyp, self.autobalance = BCEcls, BCEobj, 1.0, h, autobalance
+        #################################################################################################################
+        # self.ACEcls=ACEcls
         self.na = m.na  # number of anchors
         self.nc = m.nc  # number of classes
         self.nl = m.nl  # number of layers
         self.anchors = m.anchors
         self.device = device
+        ###############################################################################
+        self.EDLLogCls=edl_log_loss(self.nc,400,self.device)
+        
 
-    def __call__(self, p, targets):  # predictions, targets
+    def __call__(self, p, targets,epoch=None,epochs=None):  # predictions, targets
         lcls = torch.zeros(1, device=self.device)  # class loss
         lbox = torch.zeros(1, device=self.device)  # box loss
         lobj = torch.zeros(1, device=self.device)  # object loss
@@ -150,13 +220,12 @@ class ComputeLoss:
         for i, pi in enumerate(p):  # layer index, layer predictions
             b, a, gj, gi = indices[i]  # image, anchor, gridy, gridx
             tobj = torch.zeros(pi.shape[:4], dtype=pi.dtype, device=self.device)  # target obj
-
             n = b.shape[0]  # number of targets
             if n:
                 # pxy, pwh, _, pcls = pi[b, a, gj, gi].tensor_split((2, 4, 5), dim=1)  # faster, requires torch 1.8.0
                 ####################################################################################################################
-                pxy, pwh, _, pcls,u = pi[b, a, gj, gi].split((2, 2, 1, self.nc , 1), 1)  # target-subset of predictions
-                # pxy, pwh, _, pcls = pi[b, a, gj, gi].split((2, 2, 1, self.nc), 1)  # target-subset of predictions
+                # pxy, pwh, _, pcls,u = pi[b, a, gj, gi].split((2, 2, 1, self.nc , 1), 1)  # target-subset of predictions
+                pxy, pwh, _, pcls = pi[b, a, gj, gi].split((2, 2, 1, self.nc), 1)  # target-subset of predictions
 
                 # Regression
                 pxy = pxy.sigmoid() * 2 - 0.5
@@ -178,7 +247,10 @@ class ComputeLoss:
                 if self.nc > 1:  # cls loss (only if multiple classes)
                     t = torch.full_like(pcls, self.cn, device=self.device)  # targets
                     t[range(n), tcls[i]] = self.cp
-                    lcls += self.BCEcls(pcls, t)  # BCE
+                    ###########################################################################################################################
+                    # lcls += self.ACEcls(pcls, t,epoch=epoch,epochs=epochs)  # ACE
+                    lcls += self.EDLLogCls(pcls, t,epoch_num=epoch)
+                    # lcls += self.BCEcls(pcls, t)  # BCE
 
                 # Append targets to text file
                 # with open('targets.txt', 'a') as file:
@@ -186,6 +258,8 @@ class ComputeLoss:
 
             obji = self.BCEobj(pi[..., 4], tobj)
             lobj += obji * self.balance[i]  # obj loss
+
+
             if self.autobalance:
                 self.balance[i] = self.balance[i] * 0.9999 + 0.0001 / obji.detach().item()
 
@@ -254,5 +328,5 @@ class ComputeLoss:
             tbox.append(torch.cat((gxy - gij, gwh), 1))  # box
             anch.append(anchors[a])  # anchors
             tcls.append(c)  # class
-
+ 
         return tcls, tbox, indices, anch

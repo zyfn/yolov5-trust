@@ -99,6 +99,8 @@ def run(
         weights=None,  # model.pt path(s)
         batch_size=32,  # batch size
         imgsz=640,  # inference size (pixels)
+        #################################################################################
+        # conf_thres=0.1,  # confidence threshold
         conf_thres=0.001,  # confidence threshold
         iou_thres=0.6,  # NMS IoU threshold
         task='val',  # train, val, test, speed or study
@@ -122,6 +124,7 @@ def run(
         plots=True,
         callbacks=Callbacks(),
         compute_loss=None,
+        epoch_num=None
 ):
     # Initialize/load model and set device
     training = model is not None
@@ -205,10 +208,11 @@ def run(
         # Inference
         with dt[1]:
             out, train_out = model(im) if training else model(im, augment=augment, val=True)  # inference, loss outputs
-
         # Loss
         if compute_loss:
-            loss += compute_loss([x.float() for x in train_out], targets)[1]  # box, obj, cls
+            ################################################################################################
+            loss += compute_loss([x.float() for x in train_out], targets,epoch_num)[1]  # box, obj, cls
+            # loss += compute_loss([x.float() for x in train_out], targets)[1]  # box, obj, cls
 
         # NMS
         targets[:, 2:] *= torch.tensor((width, height, width, height), device=device)  # to pixels
