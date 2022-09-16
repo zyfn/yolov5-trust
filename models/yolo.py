@@ -66,7 +66,9 @@ class Detect(nn.Module):
                 ##################################################################################################################\
                 y=x[i].clone()
                 y[...,0:5]=x[i][...,0:5].sigmoid()
-                e=x[i][...,5:].relu()
+                # softPlus = torch.nn.Softplus()
+                # e = softPlus(x[i][...,5:])
+                e = x[i][...,5:].relu()
                 alpha = e+1
                 s=alpha.sum(dim=-1,keepdim=True)
                 y[...,5:]=alpha/s

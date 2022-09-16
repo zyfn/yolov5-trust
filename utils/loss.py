@@ -131,7 +131,11 @@ class edl_log_loss(nn.Module):
         self.device=device
     
     def forward(self,output, target,epoch_num):
-        evidence = torch.relu(output)
+        softPlus = torch.nn.Softplus(beta=50,threshold=0)
+        evidence = softPlus(output)
+        # leakyReLU = torch.nn.LeakyReLU()
+        # evidence = leakyReLU(output)
+        # alpha=torch.max(torch.tensor(1.).type_as(evidence),evidence+1)
         alpha = evidence + 1
         loss = torch.mean(
             self.edl_loss(
@@ -169,8 +173,8 @@ class edl_log_loss(nn.Module):
 
         kl_alpha = (alpha - 1) * (1 - y) + 1
         kl_div = annealing_coef * self.kl_divergence(kl_alpha, num_classes, device=device)
-        # return A + kl_div
-        return A
+        return A + kl_div
+        # return A
 
 
 
@@ -207,7 +211,7 @@ class ComputeLoss:
         self.anchors = m.anchors
         self.device = device
         ###############################################################################
-        self.EDLLogCls=edl_log_loss(self.nc,400,self.device)
+        self.EDLLogCls=edl_log_loss(self.nc,300,self.device)
         
 
     def __call__(self, p, targets,epoch=None,epochs=None):  # predictions, targets
