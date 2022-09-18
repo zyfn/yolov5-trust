@@ -43,37 +43,126 @@ class Detect(nn.Module):
     def __init__(self, nc=80, anchors=(), ch=(), inplace=True):  # detection layer
         super().__init__()
         self.nc = nc  # number of classes
-        #####################################################################################
         self.no = nc+5  # number of outputs per anchor
-        # self.no = nc+6  # number of outputs per anchor
         self.nl = len(anchors)  # number of detection layers
+        ###########################################无锚机制(未使用)########################################################################
         self.na = len(anchors[0]) // 2  # number of anchors
         self.grid = [torch.empty(1)] * self.nl  # init grid
         self.anchor_grid = [torch.empty(1)] * self.nl  # init anchor grid
         self.register_buffer('anchors', torch.tensor(anchors).float().view(self.nl, -1, 2))  # shape(nl,na,2)
-        self.m = nn.ModuleList(nn.Conv2d(x, self.no * self.na, 1) for x in ch)  # output conv
+        ###################################################解耦头################################################
+        self.cls_convs = nn.ModuleList()
+        self.reg_convs = nn.ModuleList()
+        self.cls_preds = nn.ModuleList()
+        self.reg_preds = nn.ModuleList()
+        self.obj_preds = nn.ModuleList()
+        self.stems = nn.ModuleList()
+        Conv = eval('Conv')
+        for i in range(len(ch)):
+            self.stems.append(
+                Conv(
+                    c1=int(ch[i]),
+                    c2=int(256),
+                    k=1,
+                    s=1,
+                )
+            )
+            self.cls_convs.append(
+                nn.Sequential(
+                    *[
+                        Conv(
+                            c1=int(256),
+                            c2=int(256),
+                            k=3,
+                            s=1,
+                        ),
+                        Conv(
+                            c1=int(256),
+                            c2=int(256),
+                            k=3,
+                            s=1,
+                        ),
+                    ]
+                )
+            )
+            self.reg_convs.append(
+                nn.Sequential(
+                    *[
+                        Conv(
+                            c1=int(256),
+                            c2=int(256),
+                            k=3,
+                            s=1,
+                        ),
+                        Conv(
+                            c1=int(256),
+                            c2=int(256),
+                            k=3,
+                            s=1,
+                        ),
+                    ]
+                )
+            )
+            self.cls_preds.append(
+                nn.Conv2d(
+                    in_channels=int(256),
+                    out_channels=self.na*self.nc,
+                    kernel_size=1,
+                    stride=1,
+                    padding=0,
+                )
+            )
+            self.reg_preds.append(
+                nn.Conv2d(
+                    in_channels=int(256),
+                    out_channels=self.na*4,
+                    kernel_size=1,
+                    stride=1,
+                    padding=0,
+                )
+            )
+            self.obj_preds.append(
+                nn.Conv2d(
+                    in_channels=int(256),
+                    out_channels=self.na*1,
+                    kernel_size=1,
+                    stride=1,
+                    padding=0,
+                )
+            )
+        # self.m = nn.ModuleList(nn. Conv2d(x, self.no * self.na, 1) for x in ch)  # output conv
         self.inplace = inplace  # use inplace ops (e.g. slice assignment)
 
     def forward(self, x):
         z = []  # inference output
         for i in range(self.nl):
-            x[i] = self.m[i](x[i])  # conv
+            ###########################################解耦头########################################################################
+            # x[i] = self.m[i](x[i])  # conv
+            
+            x[i] = self.stems[i](x[i])
+            cls_output = self.cls_preds[i](self.cls_convs[i](x[i]))
+            reg_feature = self.reg_convs[i](x[i])
+            reg_output = self.reg_preds[i](reg_feature)
+            obj_output = self.obj_preds[i](reg_feature)
+            x[i] = torch.cat([reg_output,obj_output,cls_output],dim=1)
+
             bs, _, ny, nx = x[i].shape  # x(bs,255,20,20) to x(bs,3,20,20,85)
             x[i] = x[i].view(bs, self.na, self.no, ny, nx).permute(0, 1, 3, 4, 2).contiguous()
             if not self.training:  # inference
                 if self.dynamic or self.grid[i].shape[2:4] != x[i].shape[2:4]:
                     self.grid[i], self.anchor_grid[i] = self._make_grid(nx, ny, i)
-                ##################################################################################################################\
-                y=x[i].clone()
-                y[...,0:5]=x[i][...,0:5].sigmoid()
+                #############################################引入不确定性##############################################################
+                # y=x[i].clone()
+                # y[...,0:5]=x[i][...,0:5].sigmoid()
                 # softPlus = torch.nn.Softplus()
                 # e = softPlus(x[i][...,5:])
-                e = x[i][...,5:].relu()
-                alpha = e+1
-                s=alpha.sum(dim=-1,keepdim=True)
-                y[...,5:]=alpha/s
+                # # e = x[i][...,5:].relu()
+                # alpha = e+1
+                # s=alpha.sum(dim=-1,keepdim=True)
+                # y[...,5:]=alpha/s
+            
+                y = x[i].sigmoid()
 
-                # y = x[i].sigmoid()
                 if self.inplace:
                     y[..., 0:2] = (y[..., 0:2] * 2 + self.grid[i]) * self.stride[i]  # xy
                     y[..., 2:4] = (y[..., 2:4] * 2) ** 2 * self.anchor_grid[i]  # wh
@@ -92,7 +181,9 @@ class Detect(nn.Module):
         y, x = torch.arange(ny, device=d, dtype=t), torch.arange(nx, device=d, dtype=t)
         yv, xv = torch.meshgrid(y, x, indexing='ij') if torch_1_10 else torch.meshgrid(y, x)  # torch>=0.7 compatibility
         grid = torch.stack((xv, yv), 2).expand(shape) - 0.5  # add grid offset, i.e. y = 2.0 * x - 0.5
+        ############################################无锚机制###################################################################
         anchor_grid = (self.anchors[i] * self.stride[i]).view((1, self.na, 1, 1, 2)).expand(shape)
+        # anchor_grid = self.stride[i].view((1, self.na, 1, 1, 2)).expand(shape)
         return grid, anchor_grid
 
 
@@ -178,6 +269,7 @@ class DetectionModel(BaseModel):
 
         # Build strides, anchors
         m = self.model[-1]  # Detect()
+        self.na = m.na
         if isinstance(m, Detect):
             s = 256  # 2x min stride
             m.inplace = self.inplace
@@ -185,7 +277,10 @@ class DetectionModel(BaseModel):
             check_anchor_order(m)  # must be in pixel-space (not grid-space)
             m.anchors /= m.stride.view(-1, 1, 1)
             self.stride = m.stride
-            self._initialize_biases()  # only run once
+            ########################################################################################################
+            # self._initialize_biases(m)  # only run once
+            self._initialize_biases(m,1e-2)  # only run once
+
 
         # Init weights, biases
         initialize_weights(self)
@@ -238,16 +333,26 @@ class DetectionModel(BaseModel):
         i = (y[-1].shape[1] // g) * sum(4 ** (nl - 1 - x) for x in range(e))  # indices
         y[-1] = y[-1][:, i:]  # small
         return y
+    ####################################################################################################################################
+    def _initialize_biases(self, m,prior_prob):
+        for conv in m.cls_preds:
+            b = conv.bias.view(self.na, -1)
+            b.data.fill_(-math.log((1 - prior_prob) / prior_prob))
+            conv.bias = torch.nn.Parameter(b.view(-1), requires_grad=True)
 
-    def _initialize_biases(self, cf=None):  # initialize biases into Detect(), cf is class frequency
-        # https://arxiv.org/abs/1708.02002 section 3.3
-        # cf = torch.bincount(torch.tensor(np.concatenate(dataset.labels, 0)[:, 0]).long(), minlength=nc) + 1.
-        m = self.model[-1]  # Detect() module
-        for mi, s in zip(m.m, m.stride):  # from
-            b = mi.bias.view(m.na, -1).detach()  # conv.bias(255) to (3,85)
-            b[:, 4] += math.log(8 / (640 / s) ** 2)  # obj (8 objects per 640 image)
-            b[:, 5:] += math.log(0.6 / (m.nc - 0.999999)) if cf is None else torch.log(cf / cf.sum())  # cls
-            mi.bias = torch.nn.Parameter(b.view(-1), requires_grad=True)
+        for conv in m.obj_preds:
+            b = conv.bias.view(self.na, -1)
+            b.data.fill_(-math.log((1 - prior_prob) / prior_prob))
+            conv.bias = torch.nn.Parameter(b.view(-1), requires_grad=True)
+    # def _initialize_biases(self, cf=None):  # initialize biases into Detect(), cf is class frequency
+    #     # https://arxiv.org/abs/1708.02002 section 3.3
+    #     # cf = torch.bincount(torch.tensor(np.concatenate(dataset.labels, 0)[:, 0]).long(), minlength=nc) + 1.
+    #     m = self.model[-1]  # Detect() module
+    #     for mi, s in zip(m.m, m.stride):  # from
+    #         b = mi.bias.view(m.na, -1).detach()  # conv.bias(255) to (3,85)
+    #         b[:, 4] += math.log(8 / (640 / s) ** 2)  # obj (8 objects per 640 image)
+    #         b[:, 5:] += math.log(0.6 / (m.nc - 0.999999)) if cf is None else torch.log(cf / cf.sum())  # cls
+    #         mi.bias = torch.nn.Parameter(b.view(-1), requires_grad=True)
 
 
 Model = DetectionModel  # retain YOLOv5 'Model' class for backwards compatibility

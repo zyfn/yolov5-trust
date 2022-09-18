@@ -131,11 +131,8 @@ class edl_log_loss(nn.Module):
         self.device=device
     
     def forward(self,output, target,epoch_num):
-        softPlus = torch.nn.Softplus(beta=50,threshold=0)
+        softPlus = torch.nn.Softplus()
         evidence = softPlus(output)
-        # leakyReLU = torch.nn.LeakyReLU()
-        # evidence = leakyReLU(output)
-        # alpha=torch.max(torch.tensor(1.).type_as(evidence),evidence+1)
         alpha = evidence + 1
         loss = torch.mean(
             self.edl_loss(

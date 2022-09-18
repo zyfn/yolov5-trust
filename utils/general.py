@@ -817,8 +817,6 @@ def non_max_suppression(prediction,
     """
 
     bs = prediction.shape[0]  # batch size
-    ##########################################################################################################
-    # nc = prediction.shape[2] - 6
     nc = prediction.shape[2] - 5  # number of classes
     xc = prediction[..., 4] > conf_thres  # candidates
 
@@ -867,11 +865,7 @@ def non_max_suppression(prediction,
             i, j = (x[:, 5:] > conf_thres).nonzero(as_tuple=False).T
             x = torch.cat((box[i], x[i, j + 5, None], j[:, None].float()), 1)
         else:  # best class only
-            #################################################################################
-            # conf, j = x[:, 5:5+nc].max(1, keepdim=True)
             conf, j = x[:, 5:].max(1, keepdim=True)
-            #################################################################################
-            # x = torch.cat((box, conf, j.float(),x[...,nc+5:nc+6]), 1)[conf.view(-1) > conf_thres]
             x = torch.cat((box, conf, j.float()), 1)[conf.view(-1) > conf_thres]
 
         # Filter by class
